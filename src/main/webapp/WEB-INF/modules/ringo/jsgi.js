@@ -4,19 +4,18 @@ include('io');
 include("binary");
 
 export('handleRequest');
-
-module.shared = true;
+var log = require('ringo/logging').getLogger(module.id);
 
 /**
  * Handle a JSGI request.
  * @param moduleId the module id. Ignored if functionObj is already a function.
  * @param functionObj the function, either as function object or function name to be
  *             imported from the module moduleId.
- * @param env the JSGI env object
+ * @param req the JSGI request object
  * @returns the JSGI response object
  */
-function handleRequest(moduleId, functionObj, env) {
-    initRequest(env);
+function handleRequest(moduleId, functionObj, request) {
+    initRequest(request);
     var app;
     if (typeof(functionObj) == 'function') {
         app = functionObj;
@@ -24,42 +23,38 @@ function handleRequest(moduleId, functionObj, env) {
         var module = require(moduleId);
         app = module[functionObj];
         var middleware = module.middleware || [];
-        env["ringo.config"] = moduleId;
+        request.env.ringo_config = moduleId;
         app = middleware.reduceRight(middlewareWrapper, resolve(app));
     }
     if (!(typeof(app) == 'function')) {
         throw new Error('No valid JSGI app: ' + app);
     }
-    var result = app(env);
+    var result = app(request);
     if (!result) {
         throw new Error('No valid JSGI response: ' + result);
     }
-    commitResponse(env, result);
+    commitResponse(request, result);
 }
 
 /**
  * Set up the I/O related properties of a jsgi environment object.
  * @param env a jsgi request object
  */
-function initRequest(env) {
+function initRequest(request) {
     var input, errors;
-    if (env.hasOwnProperty('jsgi.input')) {
+    if (request.hasOwnProperty('input')) {
         // already set up, probably because the original request threw a retry
         return;
     }
-    Object.defineProperty(env, "jsgi.input", {
+    Object.defineProperty(request, "input", {
         get: function() {
             if (!input)
-                input = new Stream(env['jsgi.servlet_request'].getInputStream());
+                input = new Stream(request.env.servlet_request.getInputStream());
             return input;
         }
     });
-    Object.defineProperty(env, "jsgi.errors", {
-        get: function() {
-            if (!errors)
-                errors = new Stream(java.lang.System.err);
-            return errors;
-        }
+    Object.defineProperty(request.jsgi, "errors", {
+        value: system.stderr
     });
 }
 
@@ -69,24 +64,33 @@ function initRequest(env) {
  * you won't need this unless you're implementing your own servlet
  * based JSGI connector.
  *
- * @param env the JSGI env argument
+ * @param req the JSGI request argument
  * @param result the object returned by a JSGI application
  */
-function commitResponse(env, result) {
-    if (typeof result.then === "function") {
-        handleAsyncResponse(env, result);
-        return;
-    }
-    var request = env['jsgi.servlet_request'];    
-    var response = env['jsgi.servlet_response'];
-    var charset;
-    if (!result.status || !result.headers || !result.body) {
+function commitResponse(req, result) {
+    var {status, headers, body} = result;
+    var request = req.env.servlet_request;
+    var response = req.env.servlet_response;
+    if (!status || !headers || !body) {
+        // As a convenient shorthand, we also handle async responses returning the
+        // not only the promise but the full deferred (as obtained by
+        // ringo.promise.defer()).
+        if (result.promise && typeof result.promise.then === "function") {
+            result = result.promise;
+        }
+        // If the response has a "then" function, we asume it is a promise and
+        // switch to async reponse handling.
+        if (typeof result.then === "function") {
+            handleAsyncResponse(request, result);
+            return;
+        }
         throw new Error('No valid JSGI response: ' + result);
     }
-    var {status, headers, body} = result;
-    response.status = status;
-    for (var name in headers) {
-        response.setHeader(name, headers[name]);
+    response.setStatus(status);
+    for (var key in headers) {
+        headers[key].split("\n").forEach(function(value) {
+            response.addHeader(key, value);
+        });
     }
     var charset = getMimeParameter(Headers(headers).get("Content-Type"), "charset");
     writeBody(response, body, charset);
@@ -100,6 +104,7 @@ function writeBody(response, body, charset) {
                 part = part.toByteString(charset);
             }
             output.write(part);
+            output.flush();
         };
         body.forEach(writer);
         if (typeof body.close == "function") {
@@ -110,86 +115,71 @@ function writeBody(response, body, charset) {
     }
 }
 
-function writeAsync(request, response, result, suspend) {
-    var charset;
-    var part = result.part;
-    if (result.first) {
-        if (!part.status || !part.headers) {
-            throw new Error('No valid JSGI response: ' + result);
-        }
-        var {status, headers} = part;
-        response.status = status;
-        for (var name in headers) {
-            response.setHeader(name, headers[name]);
-        }
-        charset = getMimeParameter(Headers(headers).get("Content-Type"), "charset");
+function writeAsync(servletResponse, jsgiResponse) {
+    if (!jsgiResponse.status || !jsgiResponse.headers || !jsgiResponse.body) {
+        throw new Error('No valid JSGI response: ' + jsgiResponse);
     }
-    if (part.body) {
-        writeBody(response, part.body, charset);
+    var {status, headers} = jsgiResponse;
+    servletResponse.status = status;
+    for (var name in headers) {
+        servletResponse.setHeader(name, headers[name]);
     }
-    var ContinuationSupport = org.mortbay.util.ajax.ContinuationSupport;
-    var continuation = ContinuationSupport.getContinuation(request, {});
-    continuation.reset();
-    if (!result.last && suspend) {
-        continuation.suspend(30000);
-    }
+    var charset = getMimeParameter(Headers(headers).get("Content-Type"), "charset");
+    writeBody(servletResponse, jsgiResponse.body, charset);
 }
 
-function handleAsyncResponse(env, result) {
+function handleAsyncResponse(request, result) {
     // experimental support for asynchronous JSGI based on Jetty continuations
-    var ContinuationSupport = org.mortbay.util.ajax.ContinuationSupport;
-    var request = env['jsgi.servlet_request'];
-    var response = env['jsgi.servlet_response'];
-    var queue = new java.util.concurrent.ConcurrentLinkedQueue();
-    request.setAttribute('_ringo_response', queue);
-    var continuation = ContinuationSupport.getContinuation(request, {});
-    var first = true, handled = false;
-    var onFinish = function(part) {
+    var ContinuationSupport = org.eclipse.jetty.continuation.ContinuationSupport;
+    var continuation = ContinuationSupport.getContinuation(request);
+    var handled = false;
+
+    var onFinish = sync(function(value) {
         if (handled) return;
-        var res = {
-            first: first,
-            last: true,
-            part: part
-        };
-        if (continuation.isPending()) {
-            queue.offer(res);
-            continuation.resume();
-        } else {
-            writePartial(request, response, res);
-        }
+        log.debug("JSGI async response finished", value);
         handled = true;
-    };
-    var onError = function(error) {
+        if (value && typeof value.close === 'function') {
+            value = value.close();
+        }
+        writeAsync(continuation.getServletResponse(), value);
+        continuation.complete();
+    }, request);
+
+    var onError = sync(function(error) {
         if (handled) return;
-        print("Error callback: " + error);
-        if (first) {
-            commitResponse(env, {
+        log.error("JSGI async error", error);
+        var jsgiResponse = {
+            status: 500,
+            headers: {"Content-Type": "text/html"},
+            body: ["<!DOCTYPE html><html><body><h1>Error</h1><p>", String(error), "</p></body></html>"]
+        };
+        handled = true;
+        writeAsync(continuation.getServletResponse(), jsgiResponse);
+        continuation.complete();
+    }, request);
+
+    continuation.addContinuationListener(new org.eclipse.jetty.continuation.ContinuationListener({
+        onTimeout: sync(function() {
+            if (handled) return;
+            log.error("JSGI async timeout");
+            var jsgiResponse = {
                 status: 500,
                 headers: {"Content-Type": "text/html"},
-                body: ["<!DOCTYPE html><html><body><h1>Error</h1>", error.toString(), "</body></html>"]
-            })
-        }
-        handled = true;
-    };
-    var onProgress = function(part) {
-        if (handled) return;
-        var res = {
-            first: first,
-            part: part
-        };
-        if (continuation.isPending()) {
-            queue.offer(res);
-            continuation.resume();
-        } else {
-            writePartial(request, response, res);
-        }
-        first = false;
-    };
-    // TODO sync callbacks on queue once rhino supports this (bug 513682)
-    result.then(onFinish, onError, onProgress);
-    if (!handled) {
-        continuation.suspend(30000);
-    }
+                body: ["<!DOCTYPE html><html><body><h1>Error</h1><p>Request timed out</p></body></html>"]
+            };
+            handled = true;
+            writeAsync(continuation.getServletResponse(), jsgiResponse);
+            continuation.complete();
+        }, request)
+    }));
+
+    log.debug('handling JSGI async response, calling then');
+    sync(function() {
+        result.then(onFinish, onError);
+        // default async request timeout is 30 seconds
+        continuation.setTimeout(30000);
+        continuation.suspend();
+    }, request)();
 }
 
 /**

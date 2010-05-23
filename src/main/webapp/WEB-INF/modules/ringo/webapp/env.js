@@ -10,6 +10,8 @@
 require('core/string');
 var fileutils = require('ringo/fileutils');
 
+module.shared = false;
+
 var request;
 var configs = [];
 var configIds = [];
@@ -38,6 +40,11 @@ exports.getConfigs = function() {
 
 exports.getConfig = function() {
     return config;
+};
+
+exports.reset = function() {
+    configs = [];
+    configIds = [];
 };
 
 exports.loadMacros = function(context) {

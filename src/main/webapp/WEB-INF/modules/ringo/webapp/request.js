@@ -1,47 +1,77 @@
+/**
+ * @fileOverview Adds convenience properties and methods to  a
+ * [JSGI 0.3 request object](http://wiki.commonjs.org/wiki/JSGI/Level0/A/Draft2#Request).
+ */
+
 require('core/string');
-include('ringo/functional');
-include('ringo/utils');
-include('./parameters');
-include('./fileupload');
-importClass(org.mozilla.javascript.Context);
-importClass(org.mozilla.javascript.Scriptable);
+var {isUrlEncoded, parseParameters} = require('./parameters');
+var {isFileUpload, parseFileUpload} = require('./fileupload');
+
+var {Context, Scriptable} = org.mozilla.javascript;
 
 export('Request', 'Session');
 
-// var log = require('ringo/logging').getLogger(module.id);
-module.shared = true;
+/**
+ * Adds convenience properties and methods to  a
+ * [JSGI 0.3 request object](http://wiki.commonjs.org/wiki/JSGI/Level0/A/Draft2#Request).
+ *
+ * @param request a JSGI 0.3 request object
+ * @class Request
+ */
+function Request(request) {
 
-function Request(env) {
+    // check if request is already extended
+    if (request.hasOwnProperty("path")) {
+        return request;
+    }
 
     var params, cookies, session, headers;
-    var servletRequest = env["jsgi.servlet_request"];
+    var servletRequest = request.env.servlet_request;
 
-    this.charset = servletRequest.getCharacterEncoding();
-    this.pathInfo = env.PATH_INFO;
-    this.scriptName = env.SCRIPT_NAME;
-    Object.defineProperty(this, "env", {value: env});
-    Object.defineProperty(this, "contentType", {value: env.CONTENT_TYPE});
-    Object.defineProperty(this, "contentLength", {value: env.CONTENT_LENGTH});
-    // Object.defineProperty(this, "servletRequest", {get: function() servletRequest});
-    Object.defineProperty(this, "port", {value: env.SERVER_PORT});
-    Object.defineProperty(this, "path", {value: env.SCRIPT_NAME + env.PATH_INFO});
-    Object.defineProperty(this, "queryString", {value: env.QUERY_STRING});
-    Object.defineProperty(this, "method", {value: env.REQUEST_METHOD});
+    /**
+     * The name of the encoding used for this request
+     * @name Request.instance.charset
+     */
+    request.charset = servletRequest.getCharacterEncoding();
 
-    Object.defineProperty(this, "pathDecoded", {
-        get: function() { return decodeURI(this.path) }
-    });
+    /**
+     * The request's content type, or undefined if not available.
+     * @name Request.instance.contentType
+     */
+    request.contentType = request.headers["content-type"];
 
-    Object.defineProperty(this, "params", {
+    /**
+     * The request's content length, or undefined if not available.
+     * @name Request.instance.contentLength
+     */
+    request.contentLength = request.headers["content-length"];
+
+    /**
+     * The full URI path of the request.
+     * @name Request.instance.path
+     */
+    request.path = request.scriptName + request.pathInfo;
+
+    /**
+     * The URL-decoded URI path.
+     * @name Request.instance.pathDecoded
+     */
+    request.pathDecoded = decodeURI(request.path);
+
+    /**
+     * An object containing the parsed HTTP parameters sent with this request.
+     * @name Request.instance.params
+     */
+    Object.defineProperty(request, "params", {
         get: function() {
             if (!params) {
                 params = {};
                 if (this.isPost) {
                     if (isUrlEncoded(this.contentType)) {
-                        var body = env["jsgi.input"].read();
+                        var body = this.input.read();
                         parseParameters(body, params, this.charset);
                     } else if (isFileUpload(this.contentType)) {
-                        parseFileUpload(env, params, this.charset);
+                        parseFileUpload(this, params, this.charset);
                     }
                 }
                 parseParameters(this.queryString, params, this.charset);
@@ -50,93 +80,152 @@ function Request(env) {
         }
     });
 
-    Object.defineProperty(this, "cookies", {
+    /**
+     * An object containing the HTTP cookie values sent with this request
+     * @name Request.instance.cookies
+     */
+    Object.defineProperty(request, "cookies", {
         get: function() {
             if (!cookies) {
                 cookies = new ScriptableMap();
-                (servletRequest.getCookies() || []).map(function mapCookie(servletCookie) {
-                    return new Cookie(servletCookie);
-                }).forEach(function addCookie(cookie) {
-                    cookies[cookie.name] = cookie;
-                });
+                var servletCookies = servletRequest.getCookies();
+                if (servletCookies) {
+                    servletCookies.forEach(function(cookie) {
+                        cookies[cookie.getName()] = cookie.getValue();
+                    });
+                }
             }
             return cookies;
         }
     });
 
-    Object.defineProperty(this, "session", {
+    /**
+     * A session object for the current request. If no session exists
+     * a new one will be created.
+     * @see Session
+     * @name Request.instance.session
+     */
+    Object.defineProperty(request, "session", {
         get: function() {
             if (!session)
-                session = new Session(servletRequest);
+                session = new Session(this);
             return session;
         }
     });
 
-    Object.defineProperty(this, "headers", {
+    /**
+     * Get a single request header value. If multiple headers exist for
+     * the given name, only the first one is returned.
+     * @name Request.instance.getHeader
+     * @function
+     */
+    request.getHeader = function getHeader(name) {
+        return request.headers[name.toLowerCase()];
+    };
+
+    /**
+     * Get all header values for the given header name as an array.
+     * @name Request.instance.getHeaders
+     * @function
+     */
+    request.getHeaders = function getHeaders(name) {
+        var headers = [];
+        var servletHeaders = servletRequest.getHeaders(name);
+        while (servletHeaders.hasMoreElements())
+            headers.push(servletHeaders.nextElement());
+        return headers;
+    };
+
+    /**
+     * Reset the scriptName and pathInfo properties to their original values.
+     * @name Request.instance.reset
+     * @function
+     */
+    request.reset = function() {
+        request.scriptName = servletRequest.getContextPath()
+                           + servletRequest.getServletPath();
+        request.pathInfo = servletRequest.getPathInfo();
+    };
+
+    /**
+     * True if this is a HTTP GET request.
+     * @name Request.instance.isGet
+     */
+    Object.defineProperty(request, "isGet", {
         get: function() {
-            if (!headers) {
-                headers = new ScriptableMap();
-                var names = servletRequest.getHeaderNames();
-                while (names.hasMoreElements()) {
-                    let name = names.nextElement()
-                    headers[name] = servletRequest.getHeader(name);
-                }
-            }
-            return headers;
+            return this.method == "GET";
         }
     });
 
-    Object.defineProperty(this, "getHeader", {
-        value: function getHeader(name) {
-            return servletRequest.getHeader(name);
+    /**
+     * True if this is a HTTP POST request.
+     * @name Request.instance.isPost
+     */
+    Object.defineProperty(request, "isPost", {
+        get: function() {
+            return this.method == "POST";
         }
     });
 
-    Object.defineProperty(this, "getHeaders", {
-        value: function getHeaders(name) {
-            var headers = [];
-            var servletHeaders = servletRequest.getHeaders(name);
-            while (servletHeaders.hasMoreElements())
-                headers.push(servletHeaders.nextElement());
-            return headers;
+    /**
+     * True if this is a HTTP PUT request.
+     * @name Request.instance.isPut
+     */
+    Object.defineProperty(request, "isPut", {
+        get: function() {
+            return this.method == "PUT";
         }
     });
 
-    Object.defineProperty(this, "appendToScriptName", {
-        value: function appendToScriptName(fragment) {
-            var path = this.pathInfo;
-            var pos = path.indexOf(fragment);
-            if (pos > -1) {
-                pos +=  fragment.length;
-                // add matching pattern to script-name
-                this.scriptName += path.substring(0, pos);
-                // ... and remove it from path-info
-                this.pathInfo = path.substring(pos);
-            }
+    /**
+     * True if this is a HTTP DELETE request.
+     * @name Request.instance.isDelete
+     */
+    Object.defineProperty(request, "isDelete", {
+        get: function() {
+            return this.method == "DELETE";
         }
     });
 
-    Object.defineProperty(this, "checkTrailingSlash", {
-        value: function checkTrailingSlash() {
-            // only redirect for GET requests
-            if (!this.path.endsWith("/") && this.isGet) {
-                var path = this.queryString ?
-                           this.path + "/?" + this.queryString : this.path + "/";
-                throw {redirect: path};
-            }
+    /**
+     * True if this is a HTTP HEAD request.
+     * @name Request.instance.isHead
+     */
+    Object.defineProperty(request, "isHead", {
+        get: function() {
+            return this.method == "HEAD";
         }
     });
+
+    /**
+     * True if this is a XMLHttpRequest.
+     * @name Request.instance.isXhr
+     */
+    Object.defineProperty(request, "isXhr", {
+        get: function() {
+            return this.headers["x-requested-with"] == "XMLHttpRequest";
+        }
+    });
+
+    return request;
 }
 
-function Session(servletRequest) {
+/**
+ * An HTTP session object. Properties of the session's data
+ * object are persisted between requests of the same client.
+ * @param request the JSGI request object
+ */
+function Session(request) {
 
     var data;
-    var define = bindArguments(Object.defineProperty, this);
 
     function getSession() {
-        return servletRequest.getSession();
+        return request.env.servlet_request.getSession();
     }
 
+    /**
+     * A container for things to store in this session between requests.
+     */
     Object.defineProperty(this, "data", {
         get: function() {
             if (!data) {
@@ -155,6 +244,11 @@ function Session(servletRequest) {
         }
     });
 
+    /**
+     * True if this session was created in the current request.
+     * This can be useful to find out if the client has cookies disabled
+     * for cookie-based sessions.
+     */
     Object.defineProperty(this, "isNew", {
         get: function() {
             getSession().isNew();
@@ -163,160 +257,3 @@ function Session(servletRequest) {
 
 }
 
-function Cookie(servletCookie) {
-
-    var name, path, maxAge, domain, comment, isSecure, value, version;
-    var define = bindArguments(Object.defineProperty, this);
-
-    function getCookie() {
-        return servletCookie;
-    }
-
-    Object.defineProperty(this, "name", {
-        get: function() {
-            if (!name)
-                name = getCookie().getName();
-            return name;
-        },
-
-        set: function(value) {
-            if (value) {
-                name = value;
-                getCookie().setName(name);
-            }
-            return name;
-        }
-    });
-
-    Object.defineProperty(this, "value", {
-        get: function() {
-            if (!value)
-                value = getCookie().getValue();
-            return value;
-        },
-
-        set: function(val) {
-            if (val) {
-                value = val;
-                getCookie().setValue(value);
-            }
-            return value;
-        }
-    });
-
-    Object.defineProperty(this, "domain", {
-        get: function() {
-            if (!domain)
-                domain = getCookie().getDomain();
-            return domain;
-        },
-
-        set: function(value) {
-            if (value) {
-                domain = value;
-                getCookie().setDomain(domain);
-            }
-            return domain;
-        }
-    });
-
-    Object.defineProperty(this, "path", {
-        get: function() {
-            if (!path)
-                path = getCookie().getPath();
-            return path;
-        },
-
-        set: function(value) {
-            if (value) {
-                path = value;
-                getCookie().setPath(path);
-            }
-            return path;
-        }
-    });
-
-    Object.defineProperty(this, "maxAge", {
-        get: function() {
-            if (!maxAge)
-                maxAge = getCookie().getMaxAge();
-            return maxAge;
-        },
-
-        set: function(value) {
-            if (value) {
-                maxAge = value;
-                getCookie().setMaxAge(maxAge);
-            }
-            return maxAge;
-        }
-    });
-
-    Object.defineProperty(this, "comment", {
-        get: function() {
-            if (!comment)
-                comment = getCookie().getComment();
-            return comment;
-        },
-
-        set: function(value) {
-            if (value) {
-                comment = value;
-                getCookie().setComment(comment);
-            }
-            return comment;
-        }
-    });
-
-    Object.defineProperty(this, "isSecure", {
-        get: function() {
-            if (!isSecure)
-                isSecure = getCookie().getSecure();
-            return isSecure;
-        },
-
-        set: function(value) {
-            if (value) {
-                isSecure = value;
-                getCookie().setSecure(isSecure);
-            }
-            return isSecure;
-        }
-    });
-
-    Object.defineProperty(this, "version", {
-        get: function() {
-            if (!version)
-                version = getCookie().getVersion();
-            return version;
-        },
-
-        set: function(value) {
-            if (value) {
-                version = value;
-                getCookie().setVersion(version);
-            }
-            return version;
-        }
-    });
-}
-
-Object.defineProperty(Request.prototype, "isGet", {
-    get: function() { return this.method == "GET"; }
-})
-
-Object.defineProperty(Request.prototype, "isPost", {
-    get: function() { return this.method == "POST"; }
-})
-
-Object.defineProperty(Request.prototype, "isPut", {
-    get: function() { return this.method == "PUT"; }
-})
-
-Object.defineProperty(Request.prototype, "isDelete", {
-    get: function() { return this.method == "DELETE"; }
-})
-
-Object.defineProperty(Request.prototype, "isHead", {
-    get: function() { return this.method == "HEAD"; }
-})

@@ -4,20 +4,20 @@
 
 export('Server');
 
-// mark this module as shared between all requests
-module.shared = true;
+require('core/object');
+
 var log = require('ringo/logging').getLogger(module.id);
 
 
 /**
- * Create a Jetty HTTP server with the given configuration. The configuration may
- * either pass properties to be used with the default jetty.xml, or define
+ * Create a Jetty HTTP server with the given options. The options may
+ * either define properties to be used with the default jetty.xml, or define
  * a custom configuration file.
  *
- * @param {Object} config A javascript object with any of the following properties,
+ * @param {Object} options A javascript object with any of the following properties,
  * with the default value in parentheses:
  * <ul>
- * <li>configFile ('config/jetty.xml')</li>
+ * <li>jettyConfig ('config/jetty.xml')</li>
  * <li>port (8080)</li>
  * <li>host (undefined)</li>
  * </ul>
@@ -33,10 +33,10 @@ var log = require('ringo/logging').getLogger(module.id);
  * <li>functionName ('app')</li>
  * </ul>
  */
-function Server(config) {
+function Server(options) {
 
     if (!(this instanceof Server)) {
-        return new Server(config);
+        return new Server(options);
     }
 
     // the jetty server instance
@@ -45,8 +45,8 @@ function Server(config) {
 
     function createContext(path, vhosts, enableSessions, enableSecurity) {
         var idMap = xmlconfig.getIdMap();
-        var contexts = idMap.get("contexts");
-        var context = new org.mortbay.jetty.servlet.Context(contexts, path, enableSessions, enableSecurity);
+        var contexts = idMap.get("Contexts");
+        var context = new org.eclipse.jetty.servlet.ServletContextHandler(contexts, path, enableSessions, enableSecurity);
         if (vhosts) {
             context.setVirtualHosts(Array.isArray(vhosts) ? vhosts : [String(vhosts)]);
         }
@@ -66,18 +66,18 @@ function Server(config) {
      * @param {RhinoEngine} engine optional RhinoEngine instance for multi-engine setups
      */
     this.addApplication = function(path, vhosts, app, engine) {
-        log.info("Adding JSGI handler: " + path + " -> " + app.toSource());
+        log.debug("Adding JSGI handler:", path, "->", app.toSource());
         var context = createContext(path, vhosts, true, true);
         engine = engine || require('ringo/engine').getRhinoEngine();
         var isFunction = typeof app === "function";
         var servlet = isFunction ?
                       new JsgiServlet(engine, app) :
                       new JsgiServlet(engine);
-        var jpkg = org.mortbay.jetty.servlet;
+        var jpkg = org.eclipse.jetty.servlet;
         var servletHolder = new jpkg.ServletHolder(servlet);
         if (!isFunction) {
-            servletHolder.setInitParameter('moduleName', app.moduleName || 'config');
-            servletHolder.setInitParameter('functionName', app.functionName || 'app');
+            servletHolder.setInitParameter('config', app.config || 'config');
+            servletHolder.setInitParameter('app', app.app || 'app');
         }
         context.addServlet(servletHolder, "/*");
         if (jetty.isRunning()) {
@@ -93,13 +93,42 @@ function Server(config) {
      * @param {string} dir the directory from which to serve static resources
      */
     this.addStaticResources = function(path, vhosts, dir) {
-        log.info("Adding static handler: " + path + " -> " + dir);
+        log.debug("Adding static handler:", path, "->", dir);
         var context = createContext(path, vhosts, false, true);
         var repo = getRepository(dir);
         context.setResourceBase(repo.exists() ? repo.getPath() : dir);
-        var jpkg = org.mortbay.jetty.servlet;
+        var jpkg = org.eclipse.jetty.servlet;
         var servletHolder = new jpkg.ServletHolder(jpkg.DefaultServlet);
         // staticHolder.setInitParameter("aliases", "true");
+        context.addServlet(servletHolder, "/*");
+        if (jetty.isRunning()) {
+            context.start();
+        }
+    };
+
+    /**
+     * Map a request path to a servlet.
+     * @param {string} path a request path such as "/foo/bar" or "/"
+     * @param {string|array} vhosts optional single or multiple virtual host names.
+     *   A virtual host may start with a "*." wildcard.
+     * @param {Servlet} servlet a java object implementing the javax.servlet.Servlet interface.
+     * @param {object} options object. Supports the following boolean flags:
+     *         - sessions - enable session support
+     *         - security - enable security support
+     *         - redirect - enable redirects from /path to /path/ 
+     * @since: 0.5
+     */
+    this.addServlet = function(path, vhosts, servlet, options) {
+        log.debug("Adding Servlet:", path, "->", servlet);
+        options = options || {};
+        var sessions = Boolean(options.sessions);
+        var security = Boolean(options.security);
+        var context = createContext(path, vhosts, sessions, security);
+        // avoid redirecting from /path to /path/ - this is a common cause for problems
+        // with cometd, websocket and the like as clients tend not to follow redirects.
+        context.setAllowNullPathInfo(!Boolean(options.redirect));
+        var jpkg = org.eclipse.jetty.servlet;
+        var servletHolder = new jpkg.ServletHolder(servlet);
         context.addServlet(servletHolder, "/*");
         if (jetty.isRunning()) {
             context.start();
@@ -135,34 +164,46 @@ function Server(config) {
         return jetty != null && jetty.isRunning();
     };
 
+    /**
+     * Get the Jetty server instance
+     * @returns the Jetty Server instance
+     */
+    this.getJetty = function() {
+        return jetty;
+    };
+
     // Hack: keep jetty from creating a new shutdown hook with every new server
     java.lang.System.setProperty("JETTY_NO_SHUTDOWN_HOOK", "true");
 
     // init code
-    config = config || {};
-    var configFile = config.configFile || 'config/jetty.xml';
-    var jettyconfig = getResource(configFile);
-    if (!jettyconfig.exists()) {
-        throw Error('Resource "' + configFile + '" not found');
+    options = options || {};
+    var jettyFile = options.jettyConfig || 'config/jetty.xml';
+    var jettyConfig = getResource(jettyFile);
+    if (!jettyConfig.exists()) {
+        throw Error('Resource "' + jettyFile + '" not found');
     }
-    var XmlConfiguration = org.mortbay.xml.XmlConfiguration;
+    var XmlConfiguration = org.eclipse.jetty.xml.XmlConfiguration;
     var JsgiServlet = org.ringojs.jsgi.JsgiServlet;
-    jetty = new org.mortbay.jetty.Server();
-    xmlconfig = new XmlConfiguration(jettyconfig.inputStream);
+    jetty = new org.eclipse.jetty.server.Server();
+    xmlconfig = new XmlConfiguration(jettyConfig.inputStream);
     // port config is done via properties
     var props = xmlconfig.getProperties();
-    props.put('port', (config.port || 8080).toString());
-    if (config.host) props.put('host', config.host);
+    props.put('port', (options.port || 8080).toString());
+    if (options.host) props.put('host', options.host);
     xmlconfig.configure(jetty);
+
+    // If options defines an application mount it
+    if (options.app && options.config) {
+        this.addApplication(options.mountpoint || '/', options.virtualHost, options);
+    }
+
     // Allow definition of app/static mappings in server config for convenience
-    var fileutils = require('ringo/fileutils');
-    if (config.staticDir) {
-        this.addStaticResources(config.staticMountpoint || '/static',
-                config.virtualHost, fileutils.resolveId(config.moduleName, config.staticDir));
+    if (options.staticDir) {
+        var fileutils = require('ringo/fileutils');
+        this.addStaticResources(options.staticMountpoint || '/static',
+                options.virtualHost, fileutils.resolveId(options.config, options.staticDir));
     }
-    if (config.functionName && config.moduleName) {
-        this.addApplication(config.mountpoint || '/', config.virtualHost, config);
-    }
+
     // Start listeners. This allows us to run on priviledged port 80 under jsvc
     // even as non-root user if the constructor is called with root privileges
     // while start() is called with the user we will actually run as

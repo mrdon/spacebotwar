@@ -7,8 +7,7 @@ include('./querysupport');
 
 export("Store");
 
-module.shared = true;
-var log = require('ringo/logging').getLogger(__name__);
+var log = require('ringo/logging').getLogger(module.id);
 addHostObject(org.ringojs.wrappers.Storable);
 
 /**
@@ -34,15 +33,15 @@ function Store() {
         remove: remove,
         getEntity: getEntity,
         getKey: getKey,
-        getProps: getProps,
+        getProperties: getProperties,
         getId: getId,
         equalKeys: equalKeys
     };
 
-    this.defineClass = function(type) {
+    this.defineEntity = function(type) {
         var ctor = registry[type];
         if (!ctor) {
-            ctor = registry[type] = Storable.defineClass(proxy, type);
+            ctor = registry[type] = Storable.defineEntity(proxy, type);
             ctor.all = bindArguments(all, type);
             ctor.get = bindArguments(get, type);
             ctor.query = bindArguments(query, type);

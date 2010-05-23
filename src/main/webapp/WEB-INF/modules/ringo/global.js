@@ -1,5 +1,7 @@
 /**
- * RingoJS global functions
+ * @fileoverview <p>This module provides the RingoJS-specific global functions
+ * import, include, and export, as well as require.loader for Narwhal
+ * compatibility.</p>
  */
 
 Object.defineProperty(this, "global", { value: this });
@@ -67,13 +69,47 @@ Object.defineProperty(this, "global", { value: this });
         }
     });
 
-    var system = this.system = require('system');
+    var system = this.system = this.system || require('system');
 
     /**
      * Basic print function compatible with other JavaScript implementations.
      */
-    Object.defineProperty(this, "print", {
-        value: system.print
+    if (!this.print) {
+        Object.defineProperty(this, "print", {
+            value: system.print
+        });
+    }
+
+    // Load packages
+    var packages = require("packages");
+    packages.load();
+
+    // Narwhal compatibility
+    Object.defineProperty(require, "loader", {
+        value: {
+            usingCatalog: true,
+            isLoaded: function() {
+                return false;
+            },
+            resolve: function(id, baseId) {
+                return id;
+            }
+        }
     });
+
+    // Include file and line number in error.toString() - better error messages ftw!
+    Error.prototype.toString = function() {
+        if (this.fileName && this.lineNumber != null) {
+            return [
+                this.name, ": ",
+                this.message, " (",
+                this.fileName, "#",
+                this.lineNumber, ")"].join("");
+        }
+        return this.name + ": " + this.message;
+    };
+
+    // whatever
+    require('core/regexp');
 
 })(global);

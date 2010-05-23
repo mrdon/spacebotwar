@@ -1,5 +1,5 @@
 
-var util = require('sbw.util');
+var util = require('sbw/util');
 var floatEqual = util.floatEqual;
 var floatCompare = util.floatCompare;
 var log = require('sbw').log;

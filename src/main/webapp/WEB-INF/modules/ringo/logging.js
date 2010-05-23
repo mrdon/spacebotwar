@@ -16,8 +16,9 @@ var utils = require('ringo/utils');
 
 var LoggerFactory = org.slf4j.LoggerFactory;
 
-module.shared = true;
 var configured = false;
+// interval id for configuration watcher
+var configurationWatcher;
 
 var interceptors = new java.lang.ThreadLocal();
 
@@ -99,20 +100,40 @@ function Logger(name) {
 
 /**
  * Configure log4j using the given file resource.
- * Make sure to set the reset property to true in the <log4j:configuration> header
- * e.g. <log4j:configuration xmlns:log4j='http://jakarta.apache.org/log4j/' reset="true">
+ *
+ * If you plan to update the configuration make sure to set the
+ * reset property to true in your configuration file.
+ *
+ * @param {Resource} resource the configuration resource in XML or properties format
+ * @param {Boolean} watchForUpdates if true a scheduler thread is started that
+ * repeatedly checks the resource for updates.  
  */
-var setConfig = exports.setConfig = function(resource) {
+var setConfig = exports.setConfig = function(resource, watchForUpdates) {
     var {path, url} = resource;
-    var PropertyConfigurator = org.apache.log4j.PropertyConfigurator,
-        DOMConfigurator = org.apache.log4j.xml.DOMConfigurator;
+    var PropertyConfigurator = org.apache.log4j.PropertyConfigurator;
+    var DOMConfigurator = org.apache.log4j.xml.DOMConfigurator;
     var configurator = path.endsWith('.properties') || path.endsWith('.props') ?
                        PropertyConfigurator : DOMConfigurator;
-    configurator.configure(url);
-    try {
-        configurator.configureAndWatch(path, 2000);
-    } catch (e) {
-        print("Error watching log configuration file:", e);
+    if (typeof configurator.configure === "function") {
+        configurator.configure(url);
+        if (watchForUpdates) {
+            try {
+                // set up a scheduler to watch the configuration file for changes
+                var {setInterval, clearInterval} = require("./scheduler");
+                var lastModified = resource.lastModified();
+                if (configurationWatcher) {
+                    clearInterval(configurationWatcher);
+                }
+                configurationWatcher = setInterval(function() {
+                    if (resource.exists() && resource.lastModified() != lastModified) {
+                        lastModified = resource.lastModified();
+                        configurator.configure(url);
+                    }
+                }, 3000);
+            } catch (e) {
+                print("Error watching log configuration file:", e);
+            }
+        }
     }
     configured = true;
 };
@@ -145,7 +166,7 @@ exports.setInterceptor = function(array) {
  */
 exports.getInterceptor = function() {
     return interceptors.get();
-}
+};
 
 function intercept(level, log, message) {
     var interceptor = interceptors.get();
@@ -160,10 +181,8 @@ function formatMessage(args) {
         if (arg instanceof Error || arg instanceof java.lang.Throwable) {
             message  = [
                 message,
-                "\nScript stack:\n",
-                utils.getScriptStack(arg),
-                "Java stack:\n",
-                utils.getJavaStack(arg)
+                utils.getScriptStack(arg, "\nScript stack:\n"),
+                utils.getJavaStack(arg, "Java stack:\n")
             ].join('');
         }
     }

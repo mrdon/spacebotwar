@@ -1,4 +1,6 @@
 
+require('core/string');
+
 export('readOnlyPropertyDesc',
         'writeOnlyPropertyDesc',
         'readWritePropertyDesc',
@@ -23,7 +25,7 @@ export('readOnlyPropertyDesc',
  */
 function readOnlyPropertyDesc(obj, name, desc) {
     desc = desc || {};
-    desc.get = function() { return obj[name]; }
+    desc.get = function() { return obj[name]; };
     return desc;
 }
 
@@ -42,7 +44,7 @@ function readOnlyPropertyDesc(obj, name, desc) {
  */
 function writeOnlyPropertyDesc(obj, name, desc) {
     desc = desc || {};
-    desc.set = function(value) { obj[name] = value; }
+    desc.set = function(value) { obj[name] = value; };
     return desc;
 }
 
@@ -61,8 +63,8 @@ function writeOnlyPropertyDesc(obj, name, desc) {
  */
 function readWritePropertyDesc(obj, name, desc) {
     desc = desc || {};
-    desc.get = function() { return obj[name]; }
-    desc.set = function(value) { obj[name] = value; }
+    desc.get = function() { return obj[name]; };
+    desc.set = function(value) { obj[name] = value; };
     return desc;
 }
 
@@ -108,42 +110,58 @@ function timer(fn) {
  * @return {String} the formatted string
  */
 function format() {
+    if (arguments.length == 0) {
+        return "";
+    }
     var format = arguments[0];
-    if (typeof format === 'string' && format.indexOf('{}') > -1) {
-        for (var i = 1; i < arguments.length; i++) {
-            format = format.replace("{}", String(arguments[i]));
+    var index = 1;
+    // Replace placehoder with argument as long as possible
+    if (typeof format === "string") {
+        if (format.contains("{}") && arguments.length > 1) {
+            var args = arguments;
+            format = format.replace(/{}/g, function(m) {
+                return index < args.length ? args[index++] : m;
+            });
         }
     } else {
-        format = arguments.join(' ');
+        format = String(format);
     }
-    return format || '';
+    // append remaining arguments separated by " "
+    if (index < arguments.length) {
+        return [format].concat(Array.slice(arguments, index).map(String)).join(" ");
+    } else {
+        return format;        
+    }
 }
 
 /**
  * Get a rendered JavaScript stack trace from a caught error.
  * @param {Error} error an error object
+ * @param {String} prefix to prepend to result if available
  * @return {String} the rendered JavaScript stack trace
  */
-function getScriptStack(error) {
-    var exception = error && error.rhinoException ?
-        error.rhinoException : error;
-    return exception instanceof org.mozilla.javascript.RhinoException ?
-        exception.scriptStackTrace : '';
+function getScriptStack(error, prefix) {
+    prefix = prefix || "";
+    if (error && error.stack)
+        return prefix + error.stack;
+    return "";
 }
 
 /**
  * Get a rendered JavaScript stack trace from a caught error.
  * @param {Error} error an error object
+ * @param {String} prefix to prepend to result if available
  * @return {String} the rendered JavaScript stack trace
  */
-function getJavaStack(error) {
+function getJavaStack(error, prefix) {
+    prefix = prefix || "";
     var exception = error && error.rhinoException ?
         error.rhinoException : error;
     if (exception instanceof java.lang.Throwable) {
         var writer = new java.io.StringWriter();
         var printer = new java.io.PrintWriter(writer);
         exception.printStackTrace(printer);
-        return writer.toString();
+        return prefix + writer.toString();
     }
-    return '';
+    return "";
 }

@@ -1,3 +1,9 @@
+/**
+ * @fileoverview <p>This module provides an implementation of "fs-base" as
+ * defined by the <a href="http://wiki.commonjs.org/wiki/Filesystem/A/0">CommonJS
+ * Filesystem/A/0</a> proposal.
+ */
+
 include('io');
 include('binary');
 require('core/array');
@@ -10,14 +16,12 @@ export('canonical',
        'isFile',
        'isReadable',
        'isWritable',
-       'join',
        'list',
        'makeDirectory',
        'move',
        'lastModified',
        'openRaw',
        'remove',
-       'resolve',
        'removeDirectory',
        'size',
        'touch',
@@ -39,11 +43,15 @@ export('canonical',
 var File = java.io.File,
     FileInputStream = java.io.FileInputStream,
     FileOutputStream = java.io.FileOutputStream;
+
 var SEPARATOR = File.separator;
-var SEPARATOR_RE = SEPARATOR == '/' ?
-                   new RegExp(SEPARATOR) :
-                   new RegExp(SEPARATOR.replace("\\", "\\\\") + "|/");
-var POSIX = org.ringojs.util.POSIXSupport.getPOSIX();
+
+var POSIX;
+
+function getPOSIX() {
+    POSIX = POSIX || org.ringojs.wrappers.POSIX.getPOSIX();
+    return POSIX;
+}
 
 function openRaw(path, mode, permissions) {
     // TODO many things missing here
@@ -81,7 +89,7 @@ function exists(path) {
 }
 
 function workingDirectory() {
-    return java.lang.System.getProperty('user.dir');
+    return java.lang.System.getProperty('user.dir') + SEPARATOR;
 }
 
 function changeWorkingDirectory(path) {
@@ -119,9 +127,11 @@ function lastModified(path) {
     return new Date(file.lastModified());
 }
 
-function makeDirectory(path) {
-    var file = resolveFile(path);
-    if (!file.isDirectory() && !file.mkdir()) {
+function makeDirectory(path, permissions) {
+    permissions = permissions != null ?
+            new Permissions(permissions) : Permissions["default"];
+    var POSIX = getPOSIX();
+    if (POSIX.mkdir(path, permissions.toNumber()) != 0) {
         throw new Error("failed to make directory " + path);
     }
 }
@@ -143,40 +153,27 @@ function isDirectory(path) {
 }
 
 function isLink(target) {
-    try {
-        var stat = POSIX.lstat(target);
-        return stat.isSymlink();
-    } catch (error) {
-        return false;
-    }
+    var POSIX = getPOSIX();
+    var stat = POSIX.lstat(target);
+    return stat.isSymlink();
 }
 
 function same(pathA, pathB) {
-    try {
-        var stat1 = POSIX.stat(pathA);
-        var stat2 = POSIX.stat(pathB);
-        return stat1.isIdentical(stat2);
-    } catch (error) {
-        return false;
-    }
+    var POSIX = getPOSIX();
+    var stat1 = POSIX.stat(pathA);
+    var stat2 = POSIX.stat(pathB);
+    return stat1.isIdentical(stat2);
 }
 
 function sameFilesystem(pathA, pathB) {
-    try {
-        var stat1 = POSIX.stat(pathA);
-        var stat2 = POSIX.stat(pathB);
-        return stat1.dev() == stat2.dev();
-    } catch (error) {
-        return false;
-    }
+    var POSIX = getPOSIX();
+    var stat1 = POSIX.stat(pathA);
+    var stat2 = POSIX.stat(pathB);
+    return stat1.dev() == stat2.dev();
 }
 
 function canonical(path) {
     return resolveFile(path).getCanonicalPath();
-}
-
-function join() {
-    return resolve(Array.join(arguments, SEPARATOR));
 }
 
 function touch(path, mtime) {
@@ -185,14 +182,17 @@ function touch(path, mtime) {
 }
 
 function symbolicLink(source, target) {
+    var POSIX = getPOSIX();
     return POSIX.symlink(source, target);
 }
 
 function hardLink(source, target) {
+    var POSIX = getPOSIX();
     return POSIX.link(source, target);
 }
 
 function readLink(path) {
+    var POSIX = getPOSIX();
     return POSIX.readlink(path);
 }
 
@@ -243,24 +243,29 @@ Permissions.prototype.toNumber = function() {
     return result;
 };
 
-try {
-    // FIXME: no way to get umask without setting it?
-    var umask = POSIX.umask(0022);
-    if (umask != 0022) {
-        POSIX.umask(umask);
+if (!Permissions['default']) {
+    try {
+        var POSIX = getPOSIX();
+        // FIXME: no way to get umask without setting it?
+        var umask = POSIX.umask(0022);
+        if (umask != 0022) {
+            POSIX.umask(umask);
+        }
+        Permissions['default'] = new Permissions(~umask & 0777);
+    } catch (error) {
+        Permissions['default'] = new Permissions(0755);
     }
-    Permissions['default'] = new Permissions(~umask & 0777);
-} catch (error) {
-    Permissions['default'] = new Permissions(0755);
 }
 
 function permissions(path) {
+    var POSIX = getPOSIX();
     var stat = POSIX.stat(path);
     return new Permissions(stat.mode() & 0777);
 }
 
 function owner(path) {
     try {
+        var POSIX = getPOSIX();
         var uid = POSIX.stat(path).uid();
         var owner = POSIX.getpwuid(uid);
         return owner ? owner.pw_name : uid;
@@ -271,6 +276,7 @@ function owner(path) {
 
 function group(path) {
     try {
+        var POSIX = getPOSIX();
         var gid = POSIX.stat(path).gid();
         var group = POSIX.getgrgid(gid);
         return group ? group.gr_name : gid;
@@ -281,6 +287,7 @@ function group(path) {
 
 function changePermissions(path, permissions) {
     permissions = new Permissions(permissions);
+    var POSIX = getPOSIX();
     var stat = POSIX.stat(path);
     // do not overwrite set-UID bits etc
     var preservedBits = stat.mode() & 07000;
@@ -290,56 +297,16 @@ function changePermissions(path, permissions) {
 
 // Supports user name string as well as uid int input.
 function changeOwner(path, user) {
+    var POSIX = getPOSIX();
     return POSIX.chown(path, typeof user === 'string' ?
             POSIX.getpwnam(user).pw_uid : user, -1);
 }
 
 // Supports group name string as well as gid int input.
 function changeGroup(path, group) {
+    var POSIX = getPOSIX();
     return POSIX.chown(path, -1, typeof group === 'string' ?
             POSIX.getgrnam(group).gr_gid : group);
-}
-
-// Adapted from Narwhal.
-function resolve() {
-    var root = '';
-    var elements = [];
-    var leaf = '';
-    var path;
-    for (var i = 0; i < arguments.length; i++) {
-        path = String(arguments[i]);
-        if (path.trim() == '') {
-            continue;
-        }
-        var parts = path.split(SEPARATOR_RE);
-        if (isAbsolute(path)) {
-            // path is absolute, throw away everyting we have so far
-            root = parts.shift() + SEPARATOR;
-            elements = [];
-        }
-        leaf = parts.pop();
-        if (leaf == '.' || leaf == '..') {
-            parts.push(leaf);
-            leaf = '';
-        }
-        for (var j = 0; j < parts.length; j++) {
-            var part = parts[j];
-            if (part == '..') {
-                if (elements.length > 0 && elements.peek() != '..') {
-                    elements.pop();
-                } else if (!root) {
-                    elements.push(part);
-                }
-            } else if (part != '' && part != '.') {
-                elements.push(part);
-            }
-        }
-    }
-    path = elements.join(SEPARATOR);
-    if (path.length > 0) {
-        leaf = SEPARATOR + leaf;
-    }
-    return root + path + leaf;
 }
 
 var optionsMask = {
@@ -420,6 +387,6 @@ function resolveFile(path) {
     if (path == undefined) {
         throw new Error('undefined path argument');
     }
-    var file = new File(String(path));
+    var file = file instanceof File ? file : new File(String(path));
     return file.isAbsolute() ? file : file.getAbsoluteFile();
 }

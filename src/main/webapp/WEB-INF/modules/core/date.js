@@ -14,8 +14,6 @@
  * $Date: 2007-12-13 19:25:41 +0100 (Don, 13 Dez 2007) $
  */
 
-module.shared = true;
-
 /**
  * @fileoverview Adds useful methods to the JavaScript Date type.
  */
@@ -36,22 +34,33 @@ Date.ISOFORMAT    = "yyyy-MM-dd'T'HH:mm:ss'Z'";
  * For details on the format pattern, see 
  * http://java.sun.com/j2se/1.4.2/docs/api/java/text/SimpleDateFormat.html
  * 
- * @param String Format pattern
- * @param Object Java Locale Object (optional)
- * @param Object Java TimeZone Object (optional)
- * @returns String formatted Date
+ * @param {String} format the format pattern
+ * @param {String|java.util.Locale} locale (optional) the locale as java Locale object or
+ *        lowercase two-letter ISO-639 code (e.g. "en")
+ * @param {String|java.util.TimeZone} timezone (optional) the timezone as java TimeZone
+ *        object or  an abbreviation such as "PST", a full name such as "America/Los_Angeles",
+ *        or a custom ID such as "GMT-8:00". If the id is not provided, the default timezone
+ *        is used. If the timezone id is provided but cannot be understood, the "GMT" timezone
+ *        is used.
+ * @returns {String} the formatted Date
  * @see http://java.sun.com/j2se/1.4.2/docs/api/java/text/SimpleDateFormat.html
  */
 Object.defineProperty(Date.prototype, "format", {
     value: function (format, locale, timezone) {
         if (!format)
             return this.toString();
+        if (typeof locale == "string") {
+            locale = new java.util.Locale(locale);
+        }
+        if (typeof timezone == "string") {
+            timezone = java.util.TimeZone.getTimeZone(timezone);
+        }
         var sdf = locale ? new java.text.SimpleDateFormat(format, locale)
                          : new java.text.SimpleDateFormat(format);
         if (timezone && timezone != sdf.getTimeZone())
             sdf.setTimeZone(timezone);
         return sdf.format(this);
-    }
+    }, writable: true
 });
 
 
@@ -62,7 +71,7 @@ Object.defineProperty(Date.prototype, "format", {
 Object.defineProperty(Date.prototype, "toUtc", {
     value: function() {
         this.setMinutes(this.getMinutes() + this.getTimezoneOffset());
-    }
+    }, writable: true
 });
 
 /** 
@@ -72,7 +81,7 @@ Object.defineProperty(Date.prototype, "toUtc", {
 Object.defineProperty(Date.prototype, "toLocalTime", {
     value: function() {
         this.setMinutes(this.getMinutes() - this.getTimezoneOffset());
-    }
+    }, writable: true
 });
 
 
@@ -83,7 +92,7 @@ Object.defineProperty(Date.prototype, "toLocalTime", {
 Object.defineProperty(Date.prototype, "diff", {
     value: function(dateObj) {
         return this.getTime() - dateObj.getTime();
-    }
+    }, writable: true
 });
 
 
@@ -135,7 +144,7 @@ Object.defineProperty(Date.prototype, "getTimespan", {
         }
         result.span = res.pop();
         return result;
-    }
+    }, writable: true
 });
 
 
@@ -150,7 +159,7 @@ Object.defineProperty(Date.prototype, "getAge", {
         if (!age.isFuture)
             return age.span;
         return null;
-    }
+    }, writable: true
 });
 
 
@@ -165,7 +174,7 @@ Object.defineProperty(Date.prototype, "getExpiry", {
         if (age.isFuture)
             return age.span;
         return null;
-    }
+    }, writable: true
 });
 
 
@@ -200,6 +209,6 @@ Object.defineProperty(Date.prototype, "equals", {
                     return false;
         }
         return true;
-    }
+    }, writable: true
 });
 

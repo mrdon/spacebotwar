@@ -12,7 +12,7 @@ function rnd_snd() {
 }
 
 function rnd(mean, stdev) {
-    return Math.round(util.rnd_snd()*stdev+mean);
+    return Math.round(rnd_snd()*stdev+mean);
 }
 
 function rndBoolean() {

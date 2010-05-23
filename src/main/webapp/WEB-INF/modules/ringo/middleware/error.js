@@ -8,16 +8,16 @@ var Buffer = require('ringo/buffer').Buffer;
  * JSGI middleware to display error messages and stack traces.
  */
 exports.middleware = function(app) {
-    return function(env) {
+    return function(request) {
         try {
-            return app(env);
+            return app(request);
         } catch (error if !error.retry && !error.notfound) {
-            return handleError(env, error);
+            return handleError(request, error);
         }
     }
 };
 
-function handleError(env, error) {
+function handleError(request, error) {
     var res = new Response();
     res.status = 500;
     res.contentType = 'text/html';
@@ -31,19 +31,19 @@ function handleError(env, error) {
     if (error.fileName && error.lineNumber) {
         res.writeln('<p>In file<b>', error.fileName, '</b>at line<b>', error.lineNumber, '</b></p>');
     }
-    if (error.rhinoException) {
+    if (error.stack) {
         res.writeln('<h3>Script Stack</h3>');
-        res.writeln('<pre>', error.rhinoException.scriptStackTrace, '</pre>');
+        res.writeln('<pre>', error.stack, '</pre>');        
+    }
+    if (error.rhinoException) {
         res.writeln('<h3>Java Stack</h3>');
         var writer = new java.io.StringWriter();
         var printer = new java.io.PrintWriter(writer);
         error.rhinoException.printStackTrace(printer);
         res.writeln('<pre>', writer.toString().escapeHtml(), '</pre>');
-        log.error(msg, error.rhinoException);
-    } else {
-        log.error(msg);
-    }
+    }    
     res.writeln('</body></html>');
+    log.error(error);
     return res.close();
 }
 
@@ -51,9 +51,9 @@ function renderSyntaxError(error) {
     var buffer = new Buffer();
     buffer.write("<div class='stack'>in ").write(error.sourceName);
     buffer.write(", line ").write(error.line);
-    buffer.write(": <b>").write(error.message).write("</b></div>");
+    buffer.write(": <b>").write(error.message.escapeHtml()).write("</b></div>");
     if (error.lineSource) {
-        buffer.write("<pre>").write(error.lineSource).write("\n");
+        buffer.write("<pre>").write(error.lineSource.escapeHtml()).write("\n");
         for (var i = 0; i < error.offset - 1; i++) {
             buffer.write(' ');
         }

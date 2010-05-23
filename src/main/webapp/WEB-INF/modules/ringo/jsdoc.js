@@ -1,7 +1,8 @@
 require('core/string');
 require('core/array');
-include('ringo/file');
-include('ringo/parser');
+var {visitScriptResource} = require('ringo/parser');
+var {Buffer} = require('ringo/buffer');
+
 importPackage(org.mozilla.javascript);
 importPackage(org.ringojs.repository);
 
@@ -22,7 +23,7 @@ exports.ScriptRepository = function(path) {
 
 function ScriptRepository(path) {
     var repo = path instanceof Repository ?
-               path : new FileRepository(new java.io.File(path));
+               path : new FileRepository(path);
 
     /**
      * Get a list of script resources (files with a .js extension) in this
@@ -42,6 +43,22 @@ function ScriptRepository(path) {
      */
     this.getScriptResource = function(path) {
         return repo.getResource(path);
+    };
+
+    /**
+     * Check whether this script repository exists.
+     * @returns {boolean} true if the repository exists
+     */
+    this.exists = function() {
+        return repo.exists();
+    };
+
+    /**
+     * Get the absolute path of this script repository.
+     * @returns {string} the absolute repository path
+     */
+    this.getPath = function() {
+        return repo.getPath();
     };
 
 }
@@ -122,6 +139,10 @@ exports.parseResource = function(resource) {
                     || jsdoc.getTag("returns") != null
                     || jsdoc.getTag("constructor") != null) {
                 jsdoc.isFunction = true;
+                // extract params
+                if (value && value.type == Token.FUNCTION) {
+                    jsdoc.params = value.getParams().toArray().map(function(p) nodeToString(p));
+                }
             }
             if (jsdoc.getTag("constructor") != null
                     || jsdoc.getTag("class") != null) {
@@ -137,11 +158,11 @@ exports.parseResource = function(resource) {
         if (node.type == Token.SCRIPT && node.comments) {
             for each (var comment in node.comments.toArray()) {
                 if (comment.commentType == Token.CommentType.JSDOC) {
-                    if (/@fileoverview\s/.test(comment.value)) {
+                    if (/@fileoverview\s/i.test(comment.value)) {
                         Object.defineProperty(jsdocs, "fileoverview", {
                             value: extractTags(comment.value)
                         });
-                    } else if (/@name\s/.test(comment.value)) {
+                    } else if (/@name\s/i.test(comment.value)) {
                         // JSDoc comments that have an explicit @name tag are used as is
                         // without further AST introspection. This can be used to document
                         // APIS that have no corresponding code, e.g. native host methods
@@ -182,6 +203,25 @@ exports.parseResource = function(resource) {
                 }
             }
         }
+        // check for __define[GS]etter__
+        if (node.type == Token.CALL && node.target.type == Token.GETPROP) {
+            var getprop = node.target;
+            if (["__defineGetter__", "__defineSetter__"].contains(getprop.property.string)) {
+               var args = ScriptableList(node.arguments);
+               var target = nodeToString(node.target).split('.');
+               var jsdoc = args[1].jsDoc;
+               var name = nodeToString(args[0]);
+               // prototype.__defineGetter__
+               if (exported.contains(target[0]) || standardObjects.contains(target[0])) {
+                  target.pop();
+                  target.push(name);
+                  addDocItem(target.join('.'), jsdoc);
+               // this.__defineGetter__
+               } else if (target[0] == 'this' && exportedFunction != null) {
+                  addDocItem(exportedName + ".instance." + name, jsdoc, exported);
+               }
+            }
+        }
         // exported function
         if (node.type == Token.FUNCTION && (exported.contains(node.name) || /@name\s/.test(node.jsDoc))) {
             addDocItem(node.name, node.jsDoc, node);
@@ -192,7 +232,13 @@ exports.parseResource = function(resource) {
         if (node.type == Token.VAR || node.type == Token.LET) {
             for each (var n in ScriptableList(node.variables)) {
                 if (n.target.type == Token.NAME && exported.contains(n.target.string)) {
-                    addDocItem(n.target.string,  node.jsDoc);
+                    if (n.initializer && n.initializer.type == Token.FUNCTION) {
+                        // Note: We might still miss something like 
+                        // var foo = XXX.foo = function()...
+                        exportedFunction = n.initializer;
+                        exportedName = n.target.string;
+                    }
+                    addDocItem(n.target.string,  node.jsDoc, n.initializer);
                 } else if (n.initializer && n.initializer.type == Token.ASSIGN) {
                     checkAssignment(n.initializer, node, exported);
                 }
@@ -239,8 +285,9 @@ function extractTags(/**String*/comment) {
         } else {
             var space = tag.search(/\s/);
             return space > -1 ?
-                   [tag.substring(0, space), tag.substring(space + 1).trim()] :
-                   [tag, ''];
+                   [tag.substring(0, space).toLowerCase(),
+                       tag.substring(space + 1).trim()] :
+                   [tag.toLowerCase(), ''];
         }
     });
     return Object.create(docProto, {
@@ -251,17 +298,48 @@ function extractTags(/**String*/comment) {
 // the prototype used for document items
 var docProto = {
     getTag: function(name) {
+        name = name.toLowerCase();
         for (var i = 0; i < this.tags.length; i++) {
             if (this.tags[i][0] == name) return this.tags[i][1];
         }
         return null;
     },
     getTags: function(name) {
+        name = name.toLowerCase();
         var result = [];
         for (var i = 0; i < this.tags.length; i++) {
             if (this.tags[i][0] == name) result.push(this.tags[i][1]);
         }
         return result;
+    },
+    getParameterList: function() {
+        if (!this.parameterList) {
+            var params = this.getTags("param");
+            if (params.length == 0 && this.params && this.params.length > 0) {
+                params = this.params;
+            }
+            this.parameterList = params.map(function(p) {
+                var words = p.split(" ");
+                var type = words[0].match(/^{(\S+)}$/);
+                type = type && type[1];
+                var pname = type ? words[1] : words[0];
+                var desc = words.slice(type ? 2 : 1).join(" ");
+                return {type: type, name: pname, desc: desc};
+            });
+        }
+        return this.parameterList;
+    },
+    getParameterNames: function() {
+        if (this.parameterNames == null) {
+            var buffer = new Buffer();
+            var params = this.getParameterList();
+            for (var i = 0; i < params.length; i++) {
+                if (i > 0) buffer.write(", ");
+                buffer.write(params[i].name);
+            }
+            this.parameterNames = buffer.toString();
+        }
+        return this.parameterNames;
     },
     addTag: function(name, value) {
         this.tags.push([name, value]);

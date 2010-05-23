@@ -10,23 +10,22 @@ include('ringo/webapp/request');
 include('ringo/webapp/response');
 
 var fileutils = require('ringo/fileutils');
-var Server = require('ringo/httpserver').Server;
+var daemon = require('ringo/webapp/daemon');
 
-export('start', 'stop', 'getConfig', 'getServer', 'handleRequest');
+export('getConfig',
+       'handleRequest',
+       'main');
 
-var server;
 var log = require('ringo/logging').getLogger(module.id);
-
-module.shared = true;
 
 /**
  * Handler function called by the JSGI servlet.
  *
- * @param env the JSGI environment argument
+ * @param req the JSGI 0.3 request object
  */
-function handleRequest(env) {
+function handleRequest(req) {
     // get config and apply it to req, res
-    var configId = env['ringo.config'] || 'config';
+    var configId = req.env.ringo_config || 'config';
     var config = getConfig(configId);
     if (log.isDebugEnabled()){
         log.debug('got config: ' + config.toSource());
@@ -34,7 +33,7 @@ function handleRequest(env) {
 
     // set req in webapp env module
     var webenv = require('ringo/webapp/env');
-    var req = new Request(env);
+    req = Request(req);
     var res = null;
     webenv.setRequest(req);
 
@@ -44,20 +43,21 @@ function handleRequest(env) {
     req.pathInfo = decodeURI(req.pathInfo);
 
     try {
-        return resolveInConfig(req, config, configId);
+        return resolveInConfig(req, webenv, config, configId);
     } catch (e if e.redirect) {
         return redirectResponse(e.redirect);
+    } finally {
+        webenv.reset();
     }
 }
 
-function resolveInConfig(req, config, configId) {
+function resolveInConfig(req, webenv, config, configId) {
     log.debug('resolving path {}', req.pathInfo);
     // set rootPath to the root context path on which this app is mounted
     // in the request object and config module, appPath to the path within the app.
     req.rootPath = config.rootPath = req.scriptName + '/';
     req.appPath = config.appPath = req.path.substring(req.rootPath.length);
     // set config property in webapp env module
-    var webenv = require('ringo/webapp/env');
     webenv.pushConfig(config, configId);
 
     if (!Array.isArray(config.urls)) {
@@ -81,7 +81,7 @@ function resolveInConfig(req, config, configId) {
             var module = getModule(moduleId);
             log.debug("Resolved module: {} -> {}", moduleId, module);
             // move matching path fragment from PATH_INFO to SCRIPT_NAME
-            req.appendToScriptName(match[0]);
+            appendToScriptName(req, match[0]);
             // prepare action arguments, adding regexp capture groups if any
             var args = [req].concat(match.slice(1));
             // lookup action in module
@@ -94,7 +94,7 @@ function resolveInConfig(req, config, configId) {
                 }
                 return res;
             } else if (Array.isArray(module.urls)) {
-                return resolveInConfig(req, module, moduleId);
+                return resolveInConfig(req, webenv, module, moduleId);
             }
         }
     }
@@ -148,7 +148,7 @@ function getAction(req, module, urlconf, args) {
                     // If the request path contains additional elements check whether the
                     // candidate function has formal arguments to take them
                     if (path.length <= 1 || args.length + path.length - 1 <= action.length) {
-                        req.appendToScriptName(name);
+                        appendToScriptName(req, name);
                         Array.prototype.push.apply(args, path.slice(1));
                         return action;
                     }
@@ -167,13 +167,34 @@ function getAction(req, module, urlconf, args) {
         }
         if (path.length == 0 || args.length + path.length <= action.length) {
             if (path.length == 0 && args.slice(1).join('').length == 0) {
-                req.checkTrailingSlash();
+                checkTrailingSlash(req);
             }
             Array.prototype.push.apply(args, path);
             return action;
         }
     }
     return null;
+}
+
+function checkTrailingSlash(req) {
+    // only redirect for GET requests
+    if (!req.path.endsWith("/") && req.isGet) {
+        var path = req.queryString ?
+                req.path + "/?" + req.queryString : req.path + "/";
+        throw {redirect: path};
+    }
+}
+
+function appendToScriptName(req, fragment) {
+    var path = req.pathInfo;
+    var pos = path.indexOf(fragment);
+    if (pos > -1) {
+        pos += fragment.length;
+        // add matching pattern to script-name
+        req.scriptName += path.substring(0, pos);
+        // ... and remove it from path-info
+        req.pathInfo = path.substring(pos);
+    }
 }
 
 function splitPath(path) {
@@ -192,55 +213,55 @@ function getConfig(configModuleName) {
 }
 
 /**
- * Start the web server using the given config module, or the
- * default "config" module if called without argument.
+ * Main webapp startup function.
+ * @param {String} path optional path to the web application directory or config module.
  */
-function start(moduleId) {
-    // start jetty http server
-    moduleId = moduleId || 'config';
-    var config = getConfig(moduleId);
-    var httpConfig = Object.merge(config.httpConfig || {}, {
-        moduleName: moduleId,
-        functionName: "app"
-    });
-
-    server = server || new Server(httpConfig);
-    if (Array.isArray(config.static)) {
-        config.static.forEach(function(spec) {
-            var dir = fileutils.resolveId(moduleId, spec[1]);
-            server.addStaticResources(spec[0], null, dir);
+function main(path) {
+    // parse command line options
+    var cmd = system.args.shift();
+    try {
+        var options = daemon.parseOptions(system.args, {
+            app: "app",
+            config: "config"
         });
+    } catch (error) {
+        print(error);
+        require("ringo/shell").quit();
     }
-    if (!server.isRunning()) {
-        server.start();
-    }
-}
 
-/**
- * Stop the web server.
- */
-function stop() {
-    // stop jetty HTTP server
-    if (server && server.isRunning()) {
-        server.stop();
+    if (options.help) {
+        print("Usage:");
+        print("", cmd, "[OPTIONS]", "[PATH]");
+        print("Options:");
+        print(parser.help());
+        require("ringo/shell").quit();
     }
-}
 
-/**
- * Get the server instance.
- */
-function getServer() {
-    return server;
+    // if no explicit path is given use first command line argument
+    path = path || system.args[0];
+    var fs = require("fs");
+    if (path && fs.exists(path)) {
+        if (fs.isFile(path)) {
+            // if argument is a file use it as config module
+            options.config = fs.base(path);
+            path = fs.directory(path);
+        }
+    } else {
+        path = ".";
+    }
+    // prepend the web app's directory to the module search path
+    require.paths.unshift(path);
+
+    // logging module is already loaded and configured, check if webapp provides
+    // its own log4j configuration file and apply it if so.
+    if (fs.isFile(fs.join(path, "config", "log4j.properties"))) {
+        require("./logging").setConfig(getResource('config/log4j.properties'));
+    }
+
+    daemon.init();
+    daemon.start();
 }
 
 if (require.main == module) {
-    for (var i = 1; i < system.args.length; i++) {
-        var arg = system.args[i];
-        if (arg.indexOf('-') == 0) {
-            break;
-        }
-        require.paths.splice(require.paths.length - 2, 0, arg);
-    }
-    log.info('Set up module path: ' + require.paths);
-    start();
+    main();
 }

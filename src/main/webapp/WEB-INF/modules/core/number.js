@@ -2,8 +2,6 @@
  * @fileoverview Adds useful methods to the JS Number type.
  */
 
-module.shared = true;
-
 /**
  * Format a number using java.text.DecimalFormat.
  * @param fmt the format to apply
@@ -20,7 +18,7 @@ Object.defineProperty(Number.prototype, 'format', {
         }
         var df = new java.text.DecimalFormat(fmt || "###,##0.##", symbols);
         return df.format(+this);
-    }
+    }, writable: true
 });
 
 /**
@@ -32,5 +30,5 @@ Object.defineProperty(Number.prototype, 'times', {
         for (var i = 0; i < this; i++) {
             fun(i);
         }
-    }
+    }, writable: true
 });

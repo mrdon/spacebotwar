@@ -2,10 +2,21 @@
  * @fileoverview This module provides support for scheduling invocation of functions.
  */
 
-module.shared = true;
+var {newScheduledThreadPool, newCachedThreadPool} = java.util.concurrent.Executors;
+var {ThreadFactory} = java.util.concurrent;
+var {MILLISECONDS} = java.util.concurrent.TimeUnit;
 
-var executor = executor || java.util.concurrent.Executors.newScheduledThreadPool(4);
-var MILLIS = java.util.concurrent.TimeUnit.MILLISECONDS;
+var ids = new java.util.concurrent.atomic.AtomicInteger();
+
+var executor = executor || newCachedThreadPool();
+var scheduler = scheduler || newScheduledThreadPool(4, new ThreadFactory({
+    newThread: function(runnable) {
+        var thread = new java.lang.Thread(runnable,
+                "ringo-scheduler-" + ids.incrementAndGet());
+        thread.setDaemon(true);
+        return thread;
+    }
+}));
 
 /**
  * Executes a function after specified delay.
@@ -22,7 +33,9 @@ exports.setTimeout = function(callback, delay) {
         }
     });
     delay = parseInt(delay, 10) || 0;
-    return executor.schedule(runnable, delay, MILLIS);
+    return delay == 0 ?
+            executor.submit(runnable) :
+            scheduler.schedule(runnable, delay, MILLISECONDS);
 };
 
 /**
@@ -57,7 +70,7 @@ exports.setInterval = function(callback, delay) {
         }
     });
     delay = parseInt(delay, 10) || 0;
-    return executor.scheduleAtFixedRate(runnable, 0, delay, MILLIS);
+    return scheduler.scheduleAtFixedRate(runnable, 0, delay, MILLISECONDS);
 };
 
 /**

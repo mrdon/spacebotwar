@@ -16,7 +16,7 @@ export('bindArguments', 'bindThisObject');
  */
 function bindArguments(fn /*, arg, ... */) {
     if (typeof(fn) != "function")
-        throw "Not a function: " + fn;
+        throw new Error("Not a function: " + fn);
     var slice = Array.prototype.slice;
     var pre_args = slice.call(arguments, 1);
     return function() {
@@ -36,7 +36,7 @@ function bindArguments(fn /*, arg, ... */) {
  */
 function bindThisObject(fn, obj) {
     if (typeof(fn) != "function")
-        throw "Not a function: " + fn;
+        throw new Error("Not a function: " + fn);
     return function() {
         return fn.apply(obj, arguments);
     }

@@ -1,6 +1,6 @@
 require('core/string');
 require('core/array');
-include('ringo/webapp/util');
+var {Headers} = require('ringo/webapp/util');
 
 export('middleware');
 
@@ -11,12 +11,12 @@ export('middleware');
  * @returns the wrapped JSGI app
  */
 function middleware(app) {
-    return function(env) {
-        var res = app(env);
+    return function(request) {
+        var res = app(request);
         var {status, headers, body} = res;
         if (status === 200 && typeof body.digest === "function") {
             var etags;
-            var header = env.HTTP_IF_NONE_MATCH;
+            var header = request.headers["if-none-match"];
             if (header) {
                 etags = header.split(",").map(function(s) s.trim());
             }

@@ -1,4 +1,4 @@
-var GOODS = require('sbw').GOODS;
+var sbw = require('sbw');
 var Market = require('sbw/market').Market;
 var Planet = require('sbw/planet').Planet;
 var Sector = require('sbw/sector').Sector;
@@ -9,7 +9,7 @@ var log = require('sbw').log;
 
 
 var allGoods = [];
-for (var id in GOODS) {
+for (var id in sbw.GOODS) {
     allGoods.push(id);
 }
 
@@ -182,6 +182,8 @@ function bigBang(conf) {
     game.ships = [];
     game.sectors = createSectors(numSectors, conf.maxHops, conf.maxSectorSize);
     game.planets = createSystems(conf, game.sectors);
+    game.SHIP_TYPES = sbw.SHIP_TYPES;
+    game.GOODS = sbw.GOODS;
     game.shipRunners = [];
     game.addShip = function(name, type, ai) {
         var ship = new Ship({
@@ -197,6 +199,12 @@ function bigBang(conf) {
         var runner = new ShipRunner(game, ship, ai);
         game.shipRunners.push(runner);
         return ship;
+    };
+    game.removeShip = function(id) {
+        var ship = game.ships[id];
+        ship.sector.exitShip(ship);
+        delete game.ships[id];
+        delete game.shipRunners[id];
     };
     game.runShips = function(ticks) {
         var tick, ticklen, x, len, runner;

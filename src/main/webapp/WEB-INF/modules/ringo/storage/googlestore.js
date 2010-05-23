@@ -1,14 +1,13 @@
 
 require('core/string');
-include('ringo/engine');
-include('ringo/functional');
+var {addHostObject} = require('ringo/engine');
+var {bindArguments} = require('ringo/functional');
 
-export('defineClass', 'beginTransaction', 'getTransaction', 'commitTransaction', 'abortTransaction');
+export('defineEntity', 'beginTransaction', 'getTransaction', 'commitTransaction', 'abortTransaction');
 
 importPackage(com.google.appengine.api.datastore);
 addHostObject(org.ringojs.wrappers.Storable);
 
-var __shared__ = true;
 var datastore = DatastoreServiceFactory.getDatastoreService();
 var registry = {};
 var self = this;
@@ -24,10 +23,13 @@ var GREATER_THAN_OR_EQUAL = Query.FilterOperator.GREATER_THAN_OR_EQUAL;
 var LESS_THAN =             Query.FilterOperator.LESS_THAN;
 var LESS_THAN_OR_EQUAL =    Query.FilterOperator.LESS_THAN_OR_EQUAL;
 
-function defineClass(type) {
+var ASCENDING =             Query.SortDirection.ASCENDING;
+var DESCENDING =            Query.SortDirection.DESCENDING;
+
+function defineEntity(type) {
     var ctor = registry[type];
     if (!ctor) {
-        ctor = registry[type] = Storable.defineClass(self, type);
+        ctor = registry[type] = Storable.defineEntity(self, type);
         ctor.all = bindArguments(all, type);
         ctor.get = bindArguments(get, type);
         ctor.query = bindArguments(query, type);
@@ -62,10 +64,11 @@ function create(type, key, entity) {
     return ctor.createInstance(key, entity);
 }
 
-function evaluateQuery(query, property) {
+function evaluateQuery(query, property, options) {
     var result = [];
     var type = query.getKind();
-    var i = datastore.prepare(query).asIterator();
+    var prepared = datastore.prepare(query);
+    var i = options ? prepared.asIterator(options) : prepared.asIterator();
     while (i.hasNext()) {
         var entity = i.next();
         var s = create(type, entity.getKey(), entity);
@@ -75,46 +78,54 @@ function evaluateQuery(query, property) {
 }
 
 function BaseQuery(type) {
+    var query = new Query(type);
+    var options;
+
     this.select = function(property) {
-        return evaluateQuery(this.getQuery(), property);
+        return evaluateQuery(query, property, options);
     };
-    this.getQuery = function() {
-        return new Query(type);
+
+    this.equals = function(property, value) {
+        query.addFilter(property, EQUAL, value);
+        return this;
+    };
+
+    this.greater = function(property, value) {
+        query.addFilter(property, GREATER_THAN, value);
+        return this;
+    };
+
+    this.greaterEquals = function(property, value) {
+        query.addFilter(property, GREATER_THAN_OR_EQUAL, value);
+        return this;
+    };
+
+    this.less = function(property, value) {
+        query.addFilter(property, LESS_THAN, value);
+        return this;
+    };
+
+    this.lessEquals = function(property, value) {
+        query.addFilter(property, LESS_THAN_OR_EQUAL, value);
+        return this;
+    };
+
+    this.orderBy = function(value, direction) {
+        direction = /desc/i.test(direction) ? DESCENDING : ASCENDING;
+        query.addSort(value, direction);
+        return this;
+    };
+
+    this.limit = function(value) {
+        options = options ? options.limit(value) : FetchOptions.Builder.withLimit(value);
+        return this;
+    };
+
+    this.offset = function(value) {
+        options = options ? options.offset(value) : FetchOptions.Builder.withOffset(value);
+        return this;
     };
 }
-
-function OperatorQuery(parentQuery, operator, property, value) {
-    this.select = function(selectProperty) {
-        return evaluateQuery(this.getQuery(), selectProperty);
-    };
-    this.getQuery = function() {
-        var query = parentQuery.getQuery();
-        return query.addFilter(property, operator, value);
-    };
-}
-
-BaseQuery.prototype.equals = function(property, value) {
-    return new OperatorQuery(this, EQUAL, property, value);
-};
-
-BaseQuery.prototype.greater = function(property, value) {
-    return new OperatorQuery(this, GREATER_THAN, property, value);
-};
-
-BaseQuery.prototype.greaterEquals = function(property, value) {
-    return new OperatorQuery(this, GREATER_THAN_OR_EQUAL, property, value);
-};
-
-BaseQuery.prototype.less = function(property, value) {
-    return new OperatorQuery(this, LESS_THAN, property, value);
-};
-
-BaseQuery.prototype.lessEquals = function(property, value) {
-    return new OperatorQuery(this, LESS_THAN_OR_EQUAL, property, value);
-};
-
-BaseQuery.prototype.clone(OperatorQuery.prototype);
-
 
 function all(type) {
     return evaluateQuery(new Query(type));
@@ -125,11 +136,11 @@ function query(type) {
 }
 
 function get(type, id) {
-	var key = KeyFactory.createKey(rootKey, type, id);
-	if (!isKey(key)) {
-		throw Error("Storable.get() called with non-key argument");
-	}
-	return create(key.getKind(), key, datastore.get(getTransaction(), key));
+    var key = KeyFactory.createKey(rootKey, type, id);
+    if (!isKey(key)) {
+        throw Error("Storable.get() called with non-key argument");
+    }
+    return create(key.getKind(), key, datastore.get(getTransaction(), key));
 }
 
 function save(props, entity, entities) {
@@ -160,7 +171,7 @@ function save(props, entity, entities) {
             value = list;
         } else if (typeof value === 'string' && value.length > 500) {
             // maximal length for ordinary strings is 500 chars in datastore
-            value = new Text(value); 
+            value = new Text(value);
         } else if (value instanceof Date) {
             value = new java.util.Date(value.getTime());
         }
@@ -212,7 +223,7 @@ function getKey(type, arg) {
     return null;
 }
 
-function getProps(store, entity) {
+function getProperties(store, entity) {
     var props = {};
     var map = new ScriptableMap(entity.getProperties());
     for (var i in map) {
@@ -232,7 +243,7 @@ function getProps(store, entity) {
         } else if (value instanceof java.util.Date) {
             value = new Date(value.getTime());
         } else {
-            value = Context.javaToJS(value, global);
+            value = org.mozilla.javascript.Context.javaToJS(value, global);
         }
         props[i] = value;
     }

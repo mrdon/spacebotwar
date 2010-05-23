@@ -14,10 +14,6 @@
  * $Date: 2007-12-13 13:21:48 +0100 (Don, 13 Dez 2007) $
  */
 
-var asJavaString = require('ringo/engine').asJavaString;
-
-module.shared = true;
-
 var ANUMPATTERN = /[^a-zA-Z0-9]/;
 var APATTERN = /[^a-zA-Z]/;
 var NUMPATTERN = /[^0-9]/;
@@ -203,6 +199,24 @@ Object.defineProperty(String.prototype, "isNumeric", {
 
 
 /**
+ * Transforms this string to camel-case.
+ * @returns String the resulting string
+ * @since 0.5
+ */
+Object.defineProperty(String.prototype, "toCamelCase", {
+    value: function() {
+        return this.replace(/([A-Z]+)/g, function(m, l) {
+            // "ABC" -> "Abc"
+            return l[0].toUpperCase() + l.substring(1).toLowerCase();
+        }).replace(/[\-_\s](.)/g, function(m, l) {
+            // foo-bar -> fooBar
+            return l.toUpperCase();
+        });
+    }, writable: true
+});
+
+
+/**
  * transforms the first n characters of a string to uppercase
  * @param Number amount of characters to transform
  * @returns String the resulting string
@@ -303,9 +317,9 @@ Object.defineProperty(String.prototype, "unwrap", {
  */
 Object.defineProperty(String.prototype, "digest", {
     value: function(algorithm) {
-        var ByteString = require('binary').ByteString;
+        var {ByteString} = require('binary');
         var md = java.security.MessageDigest.getInstance(algorithm || 'MD5');
-        var b = new ByteString(md.digest(this.toByteString()));
+        var b = ByteString.wrap(md.digest(this.toByteString()));
         var buf = [];
 
         for (var i = 0; i < b.length; i++) {
@@ -476,8 +490,7 @@ Object.defineProperty(String.prototype, "count", {
  */
 Object.defineProperty(String.prototype, "enbase64", {
     value: function() {
-        var bytes = asJavaString(this).getBytes();
-        return new Packages.sun.misc.BASE64Encoder().encode(bytes);
+        return require('ringo/base64').encode(this);
     }, writable: true
 });
 
@@ -487,8 +500,7 @@ Object.defineProperty(String.prototype, "enbase64", {
  */
 Object.defineProperty(String.prototype, "debase64", {
     value: function() {
-        var bytes = new Packages.sun.misc.BASE64Decoder().decodeBuffer(this);
-        return String(new java.lang.String(bytes));
+        return require('ringo/base64').decode(this);
     }, writable: true
 });
 
