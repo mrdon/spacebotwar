@@ -1,5 +1,9 @@
 
 module.shared = true;
+
+var Store = require('ringo/storage/filestore').Store;
+exports.store = new Store('db');
+
 exports.httpConfig = {
   staticDir: 'static'
 };
@@ -24,7 +28,7 @@ exports.macros = [
 ];
 
 
-exports.game = require('sbw/bigbang').bigBang({
+/*exports.game = require('sbw/bigbang').bigBang({
     numSectors : 100000,
     maxHops: 100,
     systemNames : ['koa', 'mommy', 'tasi', 'ak', 'Sol', 'Rigel 5', 'Beri', 'Vauh', 'Listehe', 'Xyna', 'Suier'],
@@ -34,6 +38,7 @@ exports.game = require('sbw/bigbang').bigBang({
     maxPlanetsPerSector : 9,
     maxSectorSize : 1000
 });
+*/
 
 exports.charset = 'UTF-8';
 exports.contentType = 'text/html';
